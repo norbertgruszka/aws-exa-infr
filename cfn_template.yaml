@@ -7,18 +7,10 @@ Parameters:
     Description: Please enter the IP range (CIDR notation) for this VPC
     Type: String
     Default: 10.0.0.0/16
-  SSHLocation:
-    Description : The IP address range that can be used to SSH to the EC2 instances
+  VpcSubnetEc2CIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
     Type: String
-    MinLength: 9
-    MaxLength: 18
-    Default: 0.0.0.0/0
-    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
-    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
-  KeyName:
-    Description : Name of an existing EC2 KeyPair to enable SSH access to the instance
-    Type: AWS::EC2::KeyPair::KeyName
-    ConstraintDescription : must be the name of an existing EC2 KeyPair.
+    Default: 10.0.0.0/24
   InstanceType:
     Description: WebServer EC2 instance type
     Type: String
@@ -45,24 +37,66 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
-  SSHSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+          Value: !Sub ${AWS::StackName}-VPC
+  # InternetGateway:
+  #   Type: AWS::EC2::InternetGateway
+  #   DependsOn: VPC
+  # AttachGateway:
+  #   Type: AWS::EC2::VPCGatewayAttachment
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     InternetGatewayId: !Ref InternetGateway
+  VPCSubnet001EC2:
+    Type: AWS::EC2::Subnet
     Properties:
-      GroupDescription: Enable port 22 for SSH connections
-      SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 22
-        ToPort: 22
-        CidrIp: !Ref SSHLocation
+      VpcId: !Ref VPC
+      CidrBlock: !Ref VpcSubnetEc2CIDR
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-001-ec2
   EC2Instance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref ImageId
-      SecurityGroups:
-        - !Ref SSHSecurityGroup
-      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vm
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo yum install -y https://s3.region.amazonaws.com/amazon-ssm-region/latest/linux_amd64/amazon-ssm-agent.rpm
+            sudo systemctl enable amazon-ssm-agent
+            sudo systemctl start amazon-ssm-agent
+            sudo systemctl status amazon-ssm-agent
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+      Path: /
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-logs
 
 Outputs:
   InstanceId:
