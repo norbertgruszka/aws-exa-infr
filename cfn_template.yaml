@@ -38,14 +38,14 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-VPC
-  # InternetGateway:
-  #   Type: AWS::EC2::InternetGateway
-  #   DependsOn: VPC
-  # AttachGateway:
-  #   Type: AWS::EC2::VPCGatewayAttachment
-  #   Properties:
-  #     VpcId: !Ref VPC
-  #     InternetGatewayId: !Ref InternetGateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
   VPCSubnet001EC2:
     Type: AWS::EC2::Subnet
     Properties:
@@ -56,6 +56,69 @@ Resources:
         Value: !Sub ${AWS::StackName}-001-ec2
   EC2Instance:
     Type: AWS::EC2::Instance
+    CreationPolicy: 
+      ResourceSignal:
+        Timeout: PT15M
+    Metadata:
+      "AWS::CloudFormation::Init":
+        configSets:
+          setup:
+            - clean_logrogate
+            - update_logrotate
+        clean_logrotate:
+          commands:
+            delete_logrotate_conf:
+              command: rm /etc/logrotate.conf 2> /dev/null
+            delete_syslog_logrotate:
+              command: rm /etc/logrotate.d/syslog 2> /dev/null
+        update_logrotate:
+          commands:
+            update_logrotate_cron:
+              command: mv /etc/cron.daily/logrotate /etc/cron.hourly/logrotate
+          files:
+            "/etc/logrotate.conf":
+              content: |
+                rotate 4
+                create
+                dateext
+                include /etc/logrotate.d
+                /var/log/wtmp {
+                    monthly
+                    create 0664 root utmp
+                        minsize 1M
+                    rotate 1
+                }
+                /var/log/btmp {
+                    missingok
+                    monthly
+                    create 0600 root utmp
+                    rotate 1
+                }
+            "/etc/logrotate.d/syslog":
+              content: !Sub | 
+                /var/log/cron
+                /var/log/maillog
+                /var/log/messages
+                /var/log/secure
+                /var/log/spooler
+                {
+                    missingok
+                    dateformat -%Y%m%d-%s
+                    compress
+                    rotate 1
+
+                    sharedscripts
+                    postrotate
+                      /bin/kill -HUP `cat /var/run/syslogd.pid 2> /dev/null` 2> /dev/null || true
+
+                      cd /var/log/
+                      for f in cron-*; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                      for f in maillog-*; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                      for f in messages-*; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                      for f in secure-*; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                      for f in spooler-*; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                    endscript
+                }
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref ImageId
@@ -66,10 +129,15 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
             #!/bin/bash
-            sudo yum install -y https://s3.region.amazonaws.com/amazon-ssm-region/latest/linux_amd64/amazon-ssm-agent.rpm
-            sudo systemctl enable amazon-ssm-agent
-            sudo systemctl start amazon-ssm-agent
-            sudo systemctl status amazon-ssm-agent
+            yum install -y https://s3.region.amazonaws.com/amazon-ssm-region/latest/linux_amd64/amazon-ssm-agent.rpm
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-ssm-agent
+            systemctl status amazon-ssm-agent
+
+            yum update -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --configsets setup --region ${AWS::Region}
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+
   EC2InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -85,6 +153,16 @@ Resources:
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: 
+                  - !Sub "${S3Bucket.Arn}/*"
+          PolicyName: s3PutObjects
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
