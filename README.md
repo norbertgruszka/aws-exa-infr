@@ -7,6 +7,14 @@ You can connect to the EC2 instance using SSM (Session Manager). I have decided 
 ### Logs rotating 
 Logrotate postrotate script uploads log files to s3 bucket every hour. The following action triggers SNS Topic which sends an email notification to the administrator. Only one new message should appear in a mailbox because all logs are uploaded in a single archive.
 
+
+# Test
+The script executing logrotate is in `/etc/cron.hourly/`. If you do not have time to wait for a full hour to see the reports in the s3 bucket, run the following command in the EC2 instance console:
+```
+sudo logrotate -f /etc/logrotate.conf
+```
+The `-f` flag forces logrotate to rotate log files.
+
 # Future improvements
 - SNS is sending a raw email message. Instead of sending direct mail, SNS could trigger a Lambda function that would send a better-formatted message. 
 - The communication between EC2 and s3 buckets goes thru the public internet. Adding VPC Endpoint with Routing tables should improve connection privacy. 
