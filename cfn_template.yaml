@@ -15,6 +15,11 @@ Parameters:
     AllowedValues: 
      - t2.medium
     ConstraintDescription: must be a valid EC2 instance type.
+  AdminMail :
+    Type: String
+    Description: Administrator email for notifications
+    # AllowedPattern: /[^\s@]+@[^\s@]+\.[^\s@]+/
+    ConstraintDescription: You should enter a valid email
 
 Resources:
   VPC:
@@ -91,29 +96,33 @@ Resources:
                 /var/log/spooler
                 {
                     missingok
-                    dateformat -%Y%m%d-%s
-                    compress
-                    rotate 1
+                    dateformat _%Y%m%d_%H%M_%s
+                    rotate 0
+                    size 100k
+                    olddir s3Logs
+                    createolddir
 
                     sharedscripts
                     postrotate
                       /bin/kill -HUP `cat /var/run/syslogd.pid 2> /dev/null` 2> /dev/null || true
 
+                      DATE=`date +"%Y%m%d_%H%M_%s"`
+                      ARCHIVE=${AWS::StackName}_ec2_logs_$DATE.tar.gz
+
                       cd /var/log/
-                      for f in cron-*.gz; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
-                      for f in maillog-*.gz; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
-                      for f in messages-*.gz; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
-                      for f in secure-*.gz; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
-                      for f in spooler-*.gz; do { sudo aws s3 cp $f s3://${S3Bucket}/logs/; } done
+                      tar -czvf $ARCHIVE s3Logs
+                      sudo aws s3 cp $ARCHIVE s3://${S3Bucket}/logs/;
+                    endscript
+
+                    lastaction
+                      sudo rm -fr /var/log/s3Logs || true
+                      sudo rm -f ${AWS::StackName}_ec2_logs_*.tar.gz || true
                     endscript
                 }
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref ImageId
       IamInstanceProfile: !Ref EC2InstanceProfile
-      Tags:
-        - Key: Name
-          Value: !Sub ${AWS::StackName}-vm
       UserData:
         Fn::Base64: !Sub |
             #!/bin/bash
@@ -157,12 +166,61 @@ Resources:
       Roles:
         - !Ref EC2InstanceRole
       Path: /
+  S3BucketPutObjectTopic:
+    Type: 'AWS::SNS::Topic'
+  S3BucketPutObjectTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: 
+        - !Ref S3BucketPutObjectTopic
+      PolicyDocument: 
+        Statement:
+        - Sid: AllowServices
+          Effect: Allow
+          Principal:
+              Service:
+                - ec2.amazonaws.com
+          Action: 'sns:Publish'
+          # Condition:
+          #   ArnLike:
+          #     "aws:SourceArn": !Ref EC2InstanceProfile
+          Resource:
+            - !Ref S3BucketPutObjectTopic
+        - Sid: AllowAWS
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action: 
+            - "sns:Publish"
+            - "SNS:GetTopicAttributes"
+            - "SNS:SetTopicAttributes"
+            - "SNS:AddPermission"
+            - "SNS:RemovePermission"
+            - "SNS:DeleteTopic"
+            - "SNS:Subscribe"
+            - "SNS:ListSubscriptionsByTopic"
+            - "SNS:Publish"
+            - "SNS:Receive"
+          Resource:
+            - !Ref S3BucketPutObjectTopic
+  S3BucketPutObjectAdminSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      TopicArn: !Ref S3BucketPutObjectTopic
+      Endpoint: !Ref AdminMail
+      Protocol: email
   S3Bucket:
     Type: 'AWS::S3::Bucket'
+    DependsOn:
+      - "S3BucketPutObjectTopicPolicy"
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub ${AWS::StackName}-logs
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Topic: !Ref S3BucketPutObjectTopic
+            Event: 's3:ObjectCreated:*'
+  
 
 Outputs:
   InstanceId:
