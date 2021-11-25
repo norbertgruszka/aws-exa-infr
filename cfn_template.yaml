@@ -167,7 +167,7 @@ Resources:
         - !Ref EC2InstanceRole
       Path: /
   S3BucketPutObjectTopic:
-    Type: 'AWS::SNS::Topic'
+    Type: AWS::SNS::Topic
   S3BucketPutObjectTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -189,7 +189,7 @@ Resources:
         - Sid: AllowAWS
           Effect: Allow
           Principal:
-            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            AWS: "*"
           Action: 
             - "sns:Publish"
             - "SNS:GetTopicAttributes"
@@ -210,9 +210,10 @@ Resources:
       Endpoint: !Ref AdminMail
       Protocol: email
   S3Bucket:
-    Type: 'AWS::S3::Bucket'
+    Type: AWS::S3::Bucket
     DependsOn:
-      - "S3BucketPutObjectTopicPolicy"
+      - S3BucketPutObjectTopicPolicy
+      - S3BucketPutObjectAdminSubscription
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
